@@ -40,12 +40,21 @@ ENV/
 # Environment variables
 .env
 .env.*
+!.env.example
 
 # DVC
 /data
 .dvc/tmp
 .dvc/cache
 *.dvc.lock
+.dvc/config.local
+.dvc/plots
+.dvc/tmp
+.dvc/**/*.dvc
+
+# Logs
+logs/
+*.log
 
 # macOS
 .DS_Store
@@ -56,4 +65,4 @@ ENV/
 data/raw/*
 data/processed/*
 !data/raw/.gitkeep
-!data/processed/.gitkeep 
+!data/processed/.gitkeep

@@ -58,3 +58,18 @@ Initial data collection and exploration is done through Jupyter notebooks in the
 ## License
 
 MIT License - See LICENSE file for details
+
+## Environment Setup
+
+1. Create a `.env` file in the root directory with the following content:
+   ```
+   # Firecrawl API configuration
+   FIRECRAWL_API_KEY=your-api-key-here
+
+   # Script configuration
+   TEST_MODE=false  # Set to true to only process 2 items
+   ```
+
+2. Replace `your-api-key-here` with your actual Firecrawl API key
+
+Note: The `.env` file is ignored by git for security reasons. Never commit API keys or sensitive credentials to the repository.
