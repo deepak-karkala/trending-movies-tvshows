@@ -1,0 +1,7 @@
+[flake8]
+# Ignore line length errors (E501)
+ignore = E501
+
+# Other style checks will still be enforced
+max-complexity = 10
+exclude = .git,__pycache__,build,dist
