@@ -1,21 +1,78 @@
-"""Scraper for fetching reviews for movies and TV shows using Firecrawl search and scrape."""
+"""Scraper for fetching reviews for movies and TV shows using the Firecrawl direct API."""
 
 import logging
 import os
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
+from pathlib import Path
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from dotenv import load_dotenv
 
 from ..utils.config_loader import load_config
 
-# Imports for Firecrawl tools and their arguments
-from .default_api import (
-    McpFirecrawl_mcpFirecrawlScrapeExtract,
-    McpFirecrawl_mcpFirecrawlSearchScrapeoptions,
-    mcp_firecrawl_scrape,
-    mcp_firecrawl_search,
-)
-
 logger = logging.getLogger(__name__)
+
+
+# --- API Key Handling and Session Setup ---
+def load_env_vars() -> str:
+    """Load environment variables from .env file in project root.
+
+    Returns:
+        str: The Firecrawl API key from environment variables.
+
+    Raises:
+        FileNotFoundError: If .env file is not found.
+        ValueError: If FIRECRAWL_API_KEY is not set in .env file.
+    """
+    # Get the project root directory (3 levels up from this script)
+    project_root = Path(__file__).resolve().parent.parent.parent.parent 
+    # Assuming this script is in mlops/scripts/scraping, .env is at project root
+    env_path = project_root / ".env"
+
+    if not env_path.exists():
+        # Try one level higher if structure is different (e.g. running from mlops/scripts)
+        project_root_alt = Path(__file__).resolve().parent.parent.parent
+        env_path_alt = project_root_alt / ".env"
+        if not env_path_alt.exists():
+            msg = (
+                f".env file not found at {env_path} or {env_path_alt}. "
+                "Please create one with FIRECRAWL_API_KEY=your-api-key"
+            )
+            logger.error(msg)
+            raise FileNotFoundError(msg)
+        env_path = env_path_alt
+
+    load_dotenv(env_path)
+    logger.info(f"Loaded .env file from: {env_path}")
+
+    api_key = os.getenv("FIRECRAWL_API_KEY")
+    if not api_key:
+        msg = "FIRECRAWL_API_KEY not found in environment variables."
+        logger.error(msg)
+        raise ValueError(msg)
+    logger.info("FIRECRAWL_API_KEY loaded successfully.")
+    return api_key
+
+
+API_KEY = load_env_vars()
+SESSION = requests.Session()
+SESSION.headers.update(
+    {
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json",
+    }
+)
+retry_strategy = Retry(
+    total=3,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+)
+adapter = HTTPAdapter(max_retries=retry_strategy)
+SESSION.mount("https://", adapter)
+SESSION.mount("http://", adapter)
+# --- End API Key Handling and Session Setup ---
 
 
 def _get_domain_name(url: str) -> str:
@@ -44,39 +101,44 @@ def _get_domain_name(url: str) -> str:
 def _search_for_review_pages(
     item_title: str, item_detail_url: str, search_limit: int
 ) -> List[Dict[str, Any]]:
-    """Search for review pages using Firecrawl."""
+    """Search for review pages using Firecrawl's direct API."""
     search_query = f"{item_title} movie reviews"
     if "tv-show" in item_detail_url or "series" in item_detail_url.lower():
         search_query = f"{item_title} TV series reviews"
 
     logger.info(f"Searching for reviews with query: '{search_query}'")
+    payload = {
+        "query": search_query,
+        "searchOptions": {"limit": search_limit},
+        # "pageOptions": { "fetchTimeout": 15000 } # Optional
+    }
     try:
-        search_results_response = mcp_firecrawl_search(
-            query=search_query,
-            limit=search_limit,
-            scrapeOptions=McpFirecrawl_mcpFirecrawlSearchScrapeoptions(
-                formats=["markdown"]  # Not strictly needed if only using URLs
-            ),
-        )
+        response = SESSION.post("https://api.firecrawl.dev/v1/search", json=payload)
+        response.raise_for_status()
+        search_results = response.json()
 
-        if isinstance(search_results_response, list):
-            return search_results_response
-        if isinstance(search_results_response, dict) and isinstance(
-            search_results_response.get("data"), list
-        ):
-            return search_results_response["data"]
-        if isinstance(search_results_response, dict) and isinstance(
-            search_results_response.get("results"), list
-        ):
-            return search_results_response["results"]
-
+        if search_results and isinstance(search_results.get("data"), list):
+            # Firecrawl search API returns a list of dicts with 'url', 'title', 'markdown', 'metadata'
+            # We are primarily interested in 'url' and 'title'
+            return [
+                {"url": r.get("url"), "title": r.get("title", "Unknown Source")}
+                for r in search_results["data"]
+                if r.get("url") # Ensure URL is present
+            ]
+        
         logger.warning(
-            f"Unexpected format from review search for '{item_title}'. Response: {search_results_response}"
+            f"Unexpected format or empty data from review search for '{item_title}'. Response: {search_results}"
+        )
+        return []
+    except requests.exceptions.RequestException as e_req:
+        logger.error(
+            f"Request error during Firecrawl search for '{item_title}': {e_req}",
+            exc_info=True,
         )
         return []
     except Exception as e_search:
         logger.error(
-            f"Error during Firecrawl search for '{item_title}': {e_search}",
+            f"Error processing Firecrawl search response for '{item_title}': {e_search}",
             exc_info=True,
         )
         return []
@@ -90,35 +152,45 @@ def _scrape_reviews_from_page(
     review_extract_prompt: str,
     review_extract_schema: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    """Scrape a single page for reviews using Firecrawl."""
+    """Scrape a single page for reviews using Firecrawl's direct API."""
     page_reviews: List[Dict[str, Any]] = []
     logger.info(f"Attempting to scrape reviews from: {page_url} (Title: {page_title})")
-    try:
-        scraped_page_response = mcp_firecrawl_scrape(
-            url=page_url,
-            formats=["extract"],
-            extract=McpFirecrawl_mcpFirecrawlScrapeExtract(
-                prompt=review_extract_prompt.format(
-                    max_reviews_per_site=max_reviews_per_site
-                ),
-                schema=review_extract_schema,
+
+    payload = {
+        "url": page_url,
+        "extractorOptions": {
+            "mode": "llm-extraction",
+            "extractionPrompt": review_extract_prompt.format(
+                max_reviews_per_site=max_reviews_per_site
             ),
-            onlyMainContent=True,
-            waitFor=3000,  # Shorter wait for review pages
-        )
+            "extractionSchema": review_extract_schema,
+        },
+        # "pageOptions": { "waitFor": 3000 }, # Optional
+        # "scrapeOptions": { "onlyMainContent": True } # Optional
+    }
+    try:
+        response = SESSION.post("https://api.firecrawl.dev/v1/scrape", json=payload)
+        response.raise_for_status()
+        scraped_page_data = response.json()
 
         extracted_data = None
-        if isinstance(scraped_page_response, dict):
-            if (
-                "extract" in scraped_page_response
-                and isinstance(scraped_page_response.get("extract"), dict)
-                and isinstance(scraped_page_response["extract"].get("data"), list)
-            ):
-                extracted_data = scraped_page_response["extract"]["data"]
-            elif "data" in scraped_page_response and isinstance(
-                scraped_page_response.get("data"), list
-            ):
-                extracted_data = scraped_page_response["data"]
+        if (
+            scraped_page_data
+            and isinstance(scraped_page_data.get("data"), dict)
+            and isinstance(
+                scraped_page_data["data"].get("llm_extraction"), list
+            ) # Schema expects a list
+        ):
+            extracted_data = scraped_page_data["data"]["llm_extraction"]
+        elif ( # Fallback for older or different structures if any
+            scraped_page_data
+            and isinstance(scraped_page_data.get("data"), dict)
+            and isinstance(
+                scraped_page_data["data"].get("extracted_data"), list
+            )
+        ):
+             extracted_data = scraped_page_data["data"]["extracted_data"]
+
 
         if extracted_data:
             logger.info(
@@ -140,11 +212,16 @@ def _scrape_reviews_from_page(
                     )
         else:
             logger.warning(
-                f"No reviews extracted or unexpected format from {page_url}. Response: {scraped_page_response}"
+                f"No reviews extracted or unexpected format from {page_url}. Response: {scraped_page_data}"
             )
+    except requests.exceptions.RequestException as e_req:
+        logger.error(
+            f"Request error scraping review page {page_url} for '{item_title}': {e_req}",
+            exc_info=True,
+        )
     except Exception as e_scrape:
         logger.error(
-            f"Error scraping review page {page_url} for '{item_title}': {e_scrape}",
+            f"Error processing scrape response for review page {page_url} for '{item_title}': {e_scrape}",
             exc_info=True,
         )
 
@@ -156,9 +233,8 @@ def fetch_reviews_for_item(
     item_detail_url: str,  # Kept for context
     max_search_results_to_process: int = 3,  # Max search results to attempt to scrape
     max_reviews_per_site: int = 1,  # Max reviews to extract from a single site page
-    firecrawl_api_key: Optional[str] = None,  # For MCP tool consistency
 ) -> List[Dict[str, Any]]:
-    """Fetch reviews for a given movie/TV show using Firecrawl search and scrape.
+    """Fetch reviews for a given movie/TV show using Firecrawl's direct API.
 
     Orchestrates searching for review pages and then scraping each page.
     """
@@ -251,27 +327,24 @@ def fetch_reviews_for_item(
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
-    # Load .env for API keys if testing locally and MCP doesn't handle it
-    # from dotenv import load_dotenv
-    # project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    # load_dotenv(os.path.join(project_root, '.env'))
+    # Ensure API_KEY is loaded (it's done globally at script start via load_env_vars()).
+    # No need to load .env here explicitly as it's handled by the global API_KEY initialization.
 
-    api_key = os.getenv("FIRECRAWL_API_KEY", "dummy_api_key_if_mcp_handles_auth")
-    if api_key == "dummy_api_key_if_mcp_handles_auth":
-        logger.info("FIRECRAWL_API_KEY not set in env. Assuming MCP tool handles auth.")
-
+    # The API_KEY is now global, so no need to pass it around or fetch from env here.
+    # If API_KEY is not set, the script would have failed at `load_env_vars()`.
+    logger.info(f"Using globally loaded FIRECRAWL_API_KEY for '{sample_movie_title}'.")
+    
     sample_movie_title = "Inception"
     sample_movie_url = "https://www.justwatch.com/us/movie/inception"
 
     print(
-        f"Fetching reviews for '{sample_movie_title}' using Firecrawl Search & Scrape..."
+        f"Fetching reviews for '{sample_movie_title}' using Firecrawl direct API..."
     )
     movie_reviews = fetch_reviews_for_item(
         sample_movie_title,
         sample_movie_url,
         max_search_results_to_process=2,
-        max_reviews_per_site=1,
-        firecrawl_api_key=api_key,
+        max_reviews_per_site=1
     )
 
     if movie_reviews:
@@ -291,15 +364,15 @@ if __name__ == "__main__":
     sample_tv_show_title = "Breaking Bad"
     sample_tv_show_url = "https://www.justwatch.com/us/tv-show/breaking-bad"
 
+    logger.info(f"Using globally loaded FIRECRAWL_API_KEY for '{sample_tv_show_title}'.")
     print(
-        f"\nFetching reviews for '{sample_tv_show_title}' using Firecrawl Search & Scrape..."
+        f"\nFetching reviews for '{sample_tv_show_title}' using Firecrawl direct API..."
     )
     tv_reviews = fetch_reviews_for_item(
         sample_tv_show_title,
         sample_tv_show_url,
         max_search_results_to_process=2,  # Try to scrape top 2 search results
-        max_reviews_per_site=1,  # Extract 1 review from each
-        firecrawl_api_key=api_key,
+        max_reviews_per_site=1  # Extract 1 review from each
     )
 
     if tv_reviews:
