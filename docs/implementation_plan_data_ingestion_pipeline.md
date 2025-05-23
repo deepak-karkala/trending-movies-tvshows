@@ -82,10 +82,11 @@
             *   Parses data into a list of dictionaries matching the raw structure of your sample JSON.
             *   Returns list of movie/show data.
     *   `review_scraper.py`:
-        *   Function `fetch_reviews_for_item(item_title, item_detail_url, max_reviews=5)`:
-            *   Simulate scraping reviews for a given item from 2-3 predefined (dummy or accessible) review sites/blogs.
-            *   Extract review text, source name, and any original score.
-            *   Returns a list of review dictionaries: `[{"source_name": "...", "review_text": "...", "original_score": "..."}, ...]`.
+        *   Function `fetch_reviews_for_item(item_title, item_detail_url, max_search_results_to_process, max_reviews_per_site)`: 
+            *   Fetches reviews for a given movie/TV show. It uses the Firecrawl API to first search for relevant review page URLs based on the item's title. 
+            *   Then, for a subset of these search results, it uses the Firecrawl API's LLM extraction capabilities to scrape review text, source name, and any original score from each page. 
+            *   The API key is loaded from environment variables.
+            *   Returns a list of review dictionaries: `[{"source_name": "...", "review_text": "...", "original_score": "...", "review_url": "..."}, ...]`.
 2.  **Preprocessing Script (`mlops/scripts/preprocessing/preprocess_data.py`):**
     *   Function `preprocess_raw_data(raw_movies_data, raw_reviews_data_map)`:
         *   Takes list of raw movie/show dicts and a map of `item_id -> list_of_review_dicts`.
