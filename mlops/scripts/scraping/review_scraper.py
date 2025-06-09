@@ -27,7 +27,7 @@ def load_env_vars() -> str:
         ValueError: If FIRECRAWL_API_KEY is not set in .env file.
     """
     # Get the project root directory (3 levels up from this script)
-    project_root = Path(__file__).resolve().parent.parent.parent.parent 
+    project_root = Path(__file__).resolve().parent.parent.parent.parent
     # Assuming this script is in mlops/scripts/scraping, .env is at project root
     env_path = project_root / ".env"
 
@@ -125,7 +125,7 @@ def _search_for_review_pages(
                 for r in search_results["data"]
                 if r.get("url") # Ensure URL is present
             ]
-        
+
         logger.warning(
             f"Unexpected format or empty data from review search for '{item_title}'. Response: {search_results}"
         )
@@ -333,7 +333,7 @@ if __name__ == "__main__":
     # The API_KEY is now global, so no need to pass it around or fetch from env here.
     # If API_KEY is not set, the script would have failed at `load_env_vars()`.
     logger.info(f"Using globally loaded FIRECRAWL_API_KEY for '{sample_movie_title}'.")
-    
+
     sample_movie_title = "Inception"
     sample_movie_url = "https://www.justwatch.com/us/movie/inception"
 
